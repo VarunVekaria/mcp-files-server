@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# OAuth client/token store (contains secrets, never commit)
+data/*.db
+data/*.db-*
+
+# Local secrets
+.env
+.env.*
+
+# Tool/IDE-generated metadata, not project content
+.out-of-code-insights/
