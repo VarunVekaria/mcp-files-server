@@ -17,5 +17,8 @@ data/*.db-*
 .env
 .env.*
 
+# Stray debug/log output
+*.log
+
 # Tool/IDE-generated metadata, not project content
 .out-of-code-insights/

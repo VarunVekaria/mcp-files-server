@@ -1,27 +1,18 @@
-"""A minimal MCP server exposing sandboxed local file/data tools over HTTP.
+"""A minimal MCP server exposing sandboxed local file/data tools over stdio.
 
 Config via environment variables (all optional):
-  MCP_ROOT                    Directory all file access is confined to. Default: ./data
-  MCP_HOST                    Bind address. Default: 127.0.0.1
-  MCP_PORT                    Port. Default: 8000
+  MCP_ROOT   Directory all file access is confined to. Default: ./data
 
-  GitHub OAuth (for remote use, e.g. adding this server as a Claude.ai/Claude
-  Desktop connector). Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and
-  MCP_BASE_URL to enable -- otherwise the server runs locally with no auth.
-  GITHUB_CLIENT_ID            Client ID of a GitHub OAuth App.
-  GITHUB_CLIENT_SECRET        Client secret of that GitHub OAuth App.
-  MCP_BASE_URL                Public URL of this server, e.g. https://my-app.fly.dev
-  MCP_JWT_SIGNING_KEY         Fixed key for signing issued tokens. Without this,
-                              a random key is generated per process, invalidating
-                              every session on restart -- set this for any
-                              deployment that's expected to restart.
-  MCP_STORAGE_ENCRYPTION_KEY  Fernet key encrypting OAuth client/token storage at
-                              rest. Generate with:
-                              python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-  OpenTelemetry tracing is native to FastMCP and configured entirely outside
-  this file -- run via `opentelemetry-instrument` (see Dockerfile) pointed at
-  an OTLP endpoint, e.g. Grafana Cloud.
+  OpenTelemetry tracing is native to FastMCP -- it emits spans via the OTel
+  API as long as some SDK TracerProvider is registered, which this file does
+  directly (see below) when OTEL_EXPORTER_OTLP_ENDPOINT is set. Standard OTel
+  env vars configure it: OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES,
+  OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS,
+  OTEL_EXPORTER_OTLP_PROTOCOL ("http/protobuf" or "grpc", default "grpc").
+  Deliberately *not* run via the `opentelemetry-instrument` CLI launcher: on
+  Windows that wrapper spawns this script as a second child process (Windows
+  has no real exec()) and relays stdio to it, which breaks Claude Desktop's
+  native pipe handling for stdio-transport MCP servers.
 
 Local debug:   uv run fastmcp dev server.py
 Run server:    uv run server.py
@@ -34,50 +25,28 @@ from fastmcp import FastMCP
 
 # --- Configuration -----------------------------------------------------------
 ROOT = Path(os.environ.get("MCP_ROOT", "./data")).resolve()
-HOST = os.environ.get("MCP_HOST", "127.0.0.1")
-PORT = int(os.environ.get("MCP_PORT", "8000"))
-
-GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")
-GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
-BASE_URL = os.environ.get("MCP_BASE_URL")
-JWT_SIGNING_KEY = os.environ.get("MCP_JWT_SIGNING_KEY")
-STORAGE_ENCRYPTION_KEY = os.environ.get("MCP_STORAGE_ENCRYPTION_KEY")
-
-OAUTH_ENABLED = bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET and BASE_URL)
-
 ROOT.mkdir(parents=True, exist_ok=True)
 
-auth = None
-if OAUTH_ENABLED:
-    from cryptography.fernet import Fernet
-    from fastmcp.server.auth.providers.github import GitHubProvider
-    from key_value.aio.stores.filetree import (
-        FileTreeStore,
-        FileTreeV1CollectionSanitizationStrategy,
-        FileTreeV1KeySanitizationStrategy,
-    )
-    from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    from opentelemetry import trace
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    oauth_dir = (ROOT / "oauth").resolve()
-    oauth_dir.mkdir(parents=True, exist_ok=True)
-    storage = FileTreeStore(
-        data_directory=oauth_dir,
-        key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(oauth_dir),
-        collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(oauth_dir),
-    )
-    if STORAGE_ENCRYPTION_KEY:
-        storage = FernetEncryptionWrapper(key_value=storage, fernet=Fernet(STORAGE_ENCRYPTION_KEY))
+    if os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL") == "http/protobuf":
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+    else:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
 
-    auth = GitHubProvider(
-        client_id=GITHUB_CLIENT_ID,
-        client_secret=GITHUB_CLIENT_SECRET,
-        base_url=BASE_URL,
-        redirect_path="/auth/github/callback",
-        jwt_signing_key=JWT_SIGNING_KEY,
-        client_storage=storage,
-    )
+    provider = TracerProvider(resource=Resource.create())
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    trace.set_tracer_provider(provider)
 
-mcp = FastMCP("files-server", auth=auth)
+mcp = FastMCP("files-server")
 
 
 def _safe(path: str) -> Path:
@@ -125,4 +94,4 @@ def file_resource(path: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host=HOST, port=PORT)
+    mcp.run(transport="stdio")
