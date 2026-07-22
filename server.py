@@ -93,6 +93,21 @@ def search_files(query: str, subdir: str = ".") -> list[str]:
 
 
 @mcp.tool()
+def grep_lines(path: str, pattern: str, max_matches: int = 50) -> list[dict]:
+    """Search a text file under the root with a regex and return matching
+    lines as [{line_number, text}], capped at `max_matches`."""
+    regex = re.compile(pattern, re.IGNORECASE)
+    matches: list[dict] = []
+    with _safe(path).open(encoding="utf-8", errors="ignore") as f:
+        for i, line in enumerate(f, start=1):
+            if regex.search(line):
+                matches.append({"line_number": i, "text": line.rstrip("\n")})
+                if len(matches) >= max_matches:
+                    break
+    return matches
+
+
+@mcp.tool()
 def write_file(path: str, content: str, overwrite: bool = False) -> str:
     """Write UTF-8 text to a file under the root, creating parent directories
     as needed. Fails if the file already exists unless `overwrite` is True."""
