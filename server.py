@@ -18,7 +18,12 @@ Local debug:   uv run fastmcp dev server.py
 Run server:    uv run server.py
 """
 
+import difflib
+import hashlib
 import os
+import re
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -85,6 +90,63 @@ def search_files(query: str, subdir: str = ".") -> list[str]:
             except Exception:
                 pass  # skip unreadable/binary files
     return sorted(hits)
+
+
+@mcp.tool()
+def write_file(path: str, content: str, overwrite: bool = False) -> str:
+    """Write UTF-8 text to a file under the root, creating parent directories
+    as needed. Fails if the file already exists unless `overwrite` is True."""
+    p = _safe(path)
+    if p.exists() and not overwrite:
+        raise ValueError(f"{path} already exists; pass overwrite=True to replace it")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return f"wrote {len(content)} chars to {path}"
+
+
+@mcp.tool()
+def file_info(path: str) -> dict:
+    """Return size, modification time, and line count for a file under the root."""
+    p = _safe(path)
+    st = p.stat()
+    try:
+        line_count = sum(1 for _ in p.open(encoding="utf-8", errors="ignore"))
+    except Exception:
+        line_count = None
+    return {
+        "path": path,
+        "size_bytes": st.st_size,
+        "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        "line_count": line_count,
+    }
+
+
+@mcp.tool()
+def hash_file(path: str, algorithm: str = "sha256") -> str:
+    """Compute a hex digest of a file under the root using the given hashlib
+    algorithm (default sha256)."""
+    h = hashlib.new(algorithm)
+    with _safe(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@mcp.tool()
+def diff_files(path_a: str, path_b: str) -> str:
+    """Return a unified diff between two text files under the root."""
+    a = _safe(path_a).read_text(encoding="utf-8").splitlines(keepends=True)
+    b = _safe(path_b).read_text(encoding="utf-8").splitlines(keepends=True)
+    return "".join(difflib.unified_diff(a, b, fromfile=path_a, tofile=path_b)) or "(no differences)"
+
+
+@mcp.tool()
+def word_frequency(path: str, top_n: int = 10) -> list[list]:
+    """Return the `top_n` most common words (case-insensitive, alphabetic) in
+    a text file under the root, as [word, count] pairs."""
+    text = _safe(path).read_text(encoding="utf-8", errors="ignore").lower()
+    words = re.findall(r"[a-z']+", text)
+    return [[w, c] for w, c in Counter(words).most_common(top_n)]
 
 
 # --- Resource: load file contents by URI (file://<path>) ---------------------
